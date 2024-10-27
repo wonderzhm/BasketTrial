@@ -1,0 +1,97 @@
+#' Get Weighted Type I Error and Power.
+#'
+#' Get weighted type I error (WE) and power(WP) cross all scenarios.
+#' including family wise (fwer) or trial wise (twer) or false discovery rate (fdr).
+#'
+#' @param object returned by \link{post.infer}.
+#' @param Q a vector of length B for the efficacy cutoff in each basket.
+#' @param s0 Setting s0=100 the weighted power reduces to type I error under global null.
+#' Please use this default.
+#' @param s1 Setting s1=0 gives equal weight for calculating weighted power across scenarios.
+#' Please use this default.
+#'
+#' @return It returns a list with \code{error.tw} for average basket-wise type I error rate (BWER) under global null,
+#' \code{bwer} for BWERs for all null baskets,
+#' \code{power.cdr} for average true positive rate (TPR) across scenarios except global null,
+#' \code{power.ccr} for average correct classification rate (CCR) across scenarios except global null.
+#' @importFrom stats weighted.mean
+#' @export
+#'
+#' @examples
+#' N <- rbind(
+#' c(10, 25),
+#' c(10, 25),
+#' c(10, 25),
+#' c(10, 25),
+#' c(10, 25)) # interim sample size and total sample size for each indication
+#' scenarios <- rbind( c(0.15, 0.15, 0.15, 0.15, 0.15), c(0.3, 0.3, 0.3, 0.3, 0.3) )
+#' res <- generate.data(N = N, ORRs = scenarios, ntrial = 1000, seed = 343809)
+#' post <- post.infer(res, pnull = rep(0.15,5), stopbounds = cbind(c(1,1,1,1,1)),
+#' ModelFit = "localPP", method = "PEB", a = 2, delta = 0.3)
+#' (Q <- get.Q.bwer(post, alpha = 0.1, digits = 3, Qclust = rep(1, 5)))
+#' (powers <- get.weighted.power(object = post, Q = Q))
+get.weighted.power <- function(object, Q, s0 = 100, s1 = 0){
+  # Setting s0=100 the weighted power reduces to type I error under global null
+  # Setting s1=0 gives equal weight for calculating weighted power across scenarios.
+  #object: returned by post.infer()
+  res.post <- object$postprob ### dim(nS, ntrial, B)
+  pnull <- object$pnull
+  nS <- dim(res.post)[1]
+  ntrial <- dim(res.post)[2]
+  B <- dim(res.post)[3]
+  ORRs <- object$ORRs
+  pnull.mat <- matrix(pnull, nS, B, byrow = TRUE)
+  ## weights
+  H0status <- (ORRs<=pnull.mat)
+  nH0 <- rowSums(H0status)
+  ind0 <- which(nH0!=0)
+  wei0 <- rep(0, nS)
+  wei0[ind0] <-  nH0[ind0]^s0/sum(nH0[ind0]^s0)
+  H1status <- (ORRs>pnull.mat)
+  nH1 <- rowSums(H1status)
+  ind1 <- which(nH1!=0)
+  wei1 <- rep(0, nS)
+  wei1[ind1] <-  nH1[ind1]^s1/sum(nH1[ind1]^s1)
+
+  # Errors and powers
+  Qarray <- array(NA, dim = c(nS, ntrial, B))
+  for(i in 1:B) Qarray[,,i] <- Q[i]
+  res.rej <- (res.post>Qarray)
+  fdrs <- rep(NA, nS)
+  twerrors <- rep(NA, nS)
+  fwerrors <- rep(NA, nS)
+  cdrs <- rep(NA, nS)
+  adrs <- rep(NA, nS)
+  ccrs <- rep(NA, nS)
+  bwer <- matrix(NA, nS, B)
+
+  for(i in 1:nS){
+    rate.rej <- matrix(res.rej[i,,], ntrial, B)
+    x0 <- rate.rej[,ORRs[i,]<=pnull,drop=FALSE]
+    x1 <- rate.rej[,ORRs[i,]>pnull,drop=FALSE]
+    n.rej <- rowSums(rate.rej)
+    n.fd <- ifelse(n.rej==0, 0, rowSums(x0)/n.rej)
+    fdrs[i] <- ifelse(length(x0)==0, NA, mean(n.fd))
+    fwerrors[i] <- ifelse(length(x0)==0, NA, mean(apply(x0, 1, any)))
+    twerrors[i] <- ifelse(length(x0)==0, NA, mean(colMeans(x0)))
+    #fwps[i] <- ifelse(length(x1)==0, NA, mean(apply(x1, 1, any)))
+    #twps[i] <- ifelse(length(x1)==0, NA, mean(colMeans(x1)))
+    cdrs[i] <- ifelse(length(x1)==0, NA, mean(rowMeans(x1)))
+    adrs[i] <- ifelse(length(x1)==0, NA, mean((rowSums(x1)-rowSums(x0))/ncol(x1)))
+    ccrs[i] <- ifelse(length(x1)==0, NA, mean((rowSums(x1)+(ncol(x0)-rowSums(x0)))/B))
+    bwer[i,] <- colMeans(rate.rej)
+    bwer[i,ORRs[i,]>pnull] <- NA
+  }
+  w.fdr <- weighted.mean(fdrs, w = wei0)
+  w.twe <- weighted.mean(twerrors, w = wei0)
+  w.fwe <- weighted.mean(fwerrors, w = wei0)
+  w.cdr <- weighted.mean(cdrs, w = wei1)
+  w.adr <- weighted.mean(adrs, w = wei1)
+  w.ccr <- weighted.mean(ccrs, w = wei1)
+
+  return(list(Q=Q, error.fdr = w.fdr, error.tw=w.twe, error.fw=w.fwe,
+              power.cdr=w.cdr, power.adr = w.adr, power.ccr = w.ccr,
+              ind.error.fdr = fdrs, ind.error.tw = twerrors, ind.error.fw = fwerrors,
+              ind.power.cdr=cdrs, ind.power.adr=adrs, ind.power.ccr=ccrs, bwer = bwer,
+              w0 = wei0, w1 = wei1))
+}
